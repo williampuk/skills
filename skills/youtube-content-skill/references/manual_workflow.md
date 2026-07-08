@@ -90,10 +90,24 @@ export YTDLP_COOKIES_FILE=/secure/path/cookies.txt
 Before running `yt-dlp`, check whether the variable is set. If it is set, use it. If it is not set, do not add any cookie option:
 
 ```bash
+YTDLP_COOKIE_ARGS=()
 if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
   YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+fi
+```
+
+Also prepare JavaScript runtime args for yt-dlp's YouTube EJS challenge solving:
+
+```bash
+YTDLP_JS_ARGS=()
+if command -v deno >/dev/null 2>&1; then
+  :  # Deno is enabled by default by yt-dlp.
+elif command -v node >/dev/null 2>&1; then
+  YTDLP_JS_ARGS=(--js-runtimes node)
+elif command -v qjs >/dev/null 2>&1; then
+  YTDLP_JS_ARGS=(--js-runtimes quickjs)
 else
-  YTDLP_COOKIE_ARGS=()
+  echo "No supported JS runtime found. Install Deno first, or Node/QuickJS as fallback." >&2
 fi
 ```
 
@@ -101,7 +115,7 @@ Download the video into the workspace `tmp/videos/` folder:
 
 ```bash
 mkdir -p tmp/videos
-yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
+yt-dlp "${YTDLP_JS_ARGS[@]}" "${YTDLP_COOKIE_ARGS[@]}" \
   --no-playlist \
   --write-info-json \
   --restrict-filenames \
@@ -111,6 +125,31 @@ yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
 ```
 
 Do not ask for a cookie path in the command. Do not print cookie file contents.
+
+## If yt-dlp shows only storyboard/image formats
+
+If `yt-dlp --list-formats` shows only `sb0`, `sb1`, `sb2`, `sb3`, or `mhtml` storyboards, and the log says `n challenge solving failed`, treat it as extraction failure, not as a valid download result.
+
+Run diagnostics:
+
+```bash
+yt-dlp --version
+python3 -m pip show yt-dlp yt-dlp-ejs 2>/dev/null || true
+command -v deno || true
+command -v node || true
+command -v qjs || true
+yt-dlp --verbose --list-formats "$VIDEO_URL" 2>&1 | tee tmp/yt-dlp-verbose.log
+```
+
+For pip-based installs, update with default dependencies so `yt-dlp-ejs` is installed:
+
+```bash
+python3 -m pip install -U "yt-dlp[default]"
+```
+
+If no JS runtime exists, install Deno first. If Deno cannot be installed but Node is available, use `--js-runtimes node`. If QuickJS is available as `qjs`, use `--js-runtimes quickjs`.
+
+See `references/YTDLP_EJS_TROUBLESHOOTING.md` for the full troubleshooting ladder.
 
 ## Transcribe downloaded fallback video
 
