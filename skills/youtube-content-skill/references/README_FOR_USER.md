@@ -40,11 +40,18 @@ python3 scripts/fetch_youtube_content.py "https://www.youtube.com/watch?v=1NngTU
   --out-dir tmp/transcripts/1NngTUYPdpI
 ```
 
-If no transcript is found, it should download the video only then:
+If no transcript is found, it should download the video only then. The agent should check `YTDLP_COOKIES_FILE`; if it is set, use it, and if not, omit the cookie option:
 
 ```bash
 mkdir -p tmp/videos
-yt-dlp --no-playlist --write-info-json --restrict-filenames \
+if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
+  YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+else
+  YTDLP_COOKIE_ARGS=()
+fi
+
+yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
+  --no-playlist --write-info-json --restrict-filenames \
   -f "best[ext=mp4]/best" \
   -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
   "https://www.youtube.com/watch?v=1NngTUYPdpI"
@@ -70,4 +77,10 @@ Install `ffmpeg` if you want optional audio extraction or more robust media hand
 
 ## Cookies
 
-If a site requires authenticated access, provision a Netscape/Mozilla `cookies.txt` file and pass it to `yt-dlp` with `--cookies`. See `references/COOKIES.md`.
+If a site requires authenticated access, provision a Netscape/Mozilla `cookies.txt` file path through the `YTDLP_COOKIES_FILE` environment variable:
+
+```bash
+export YTDLP_COOKIES_FILE=/secure/path/cookies.txt
+```
+
+The agent should check whether this variable is set. If set, it should pass `--cookies "$YTDLP_COOKIES_FILE"` to `yt-dlp`; if not set, it should not add any cookie option. See `references/COOKIES.md`.
