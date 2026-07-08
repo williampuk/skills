@@ -1,171 +1,205 @@
 ---
-name: youtube-content-fetcher
-description: Use this skill whenever the user gives a YouTube URL, YouTube video ID, local downloaded YouTube MP4 path, or asks to summarize/analyze/extract the content, transcript, subtitles, captions, chapters, slides, examples, quotes, or metadata from a YouTube video. This skill gives Claude a repeatable workflow for trying direct YouTube fetches, yt-dlp/youtube-dl subtitles, captionTracks/timedtext extraction, noembed/oEmbed metadata, Piped frontend caption discovery, sidecar subtitle files, local media inspection, and optional local ASR via faster-whisper, then saving transcripts and producing grounded summaries.
+name: video-transcriber
+description: Use this skill when the user gives a local video/audio file, a YouTube URL/video ID, or another web video link and asks to transcribe, subtitle, summarize, or analyze spoken video content. For local media, use Python and faster-whisper directly. For web video links, first try transcript/caption resources without downloading the video; if those fail, download the video to the workspace tmp/videos folder with yt-dlp, then transcribe the downloaded local file.
 ---
 
-# YouTube Content Fetcher
+# Video Transcriber
 
-This skill helps Claude reliably retrieve and analyze the content of a YouTube video when the user provides a YouTube link, video ID, or local media file path.
+This skill retrieves or creates transcripts from local media files and web video links.
 
-Use this skill when the user asks for any of the following:
+Use it when the user asks for any of the following:
 
-- summarize a YouTube video
-- get a YouTube transcript, subtitles, captions, ASR captions, or timedtext
-- analyze a downloaded YouTube MP4 together with the source URL
-- extract chapters, timestamps, key topics, slide content, code examples, quotes, or diagrams mentioned in a video
-- compare multiple transcript acquisition methods
-- save the raw transcript to a file for later analysis
+- transcribe a local video/audio file
+- summarize or analyze a YouTube video
+- get YouTube subtitles, captions, ASR captions, or timedtext
+- extract chapters, timestamps, examples, code, quotes, or topics from a video
+- download a web video only because transcript/caption resources failed and local ASR is needed
 
 ## Core principle
 
-Do not improvise a new one-off approach every time. Follow the ordered retrieval ladder below, record what worked and what failed, save artifacts under `/tmp`, then summarize from the best available transcript or captions.
+Follow the source-specific ladder. Do not improvise a new one-off approach every time.
 
-Respect access controls and copyright. Do not bypass paywalls, private video restrictions, account-only access, DRM, or age-gated/login-only content. Prefer summaries and user-directed analysis. Only provide long verbatim transcript text when the user owns the video, has supplied the transcript/media themselves, or the transcript is clearly permitted for reuse.
+1. **Local media file**: transcribe directly with `scripts/local_asr_faster_whisper.py`.
+2. **Web video link**: try transcript/caption resources first with `scripts/fetch_youtube_content.py`.
+3. **Fallback for web video**: only if transcript resources fail, download the video with `yt-dlp` into the workspace `tmp/videos/` folder, then run local ASR on that downloaded file.
 
-## First action
+Respect access controls and copyright. Do not bypass paywalls, private video restrictions, account-only access, DRM, or age-gated/login-only content. Prefer summaries and user-directed analysis. Only provide long verbatim transcript text when the user owns the video, has supplied the transcript/media themselves, or reuse is clearly permitted.
 
-If code execution and shell access are available, run the helper script:
+Never print cookie file contents. If cookies are needed, the human/user should provision the cookie file path in the `YTDLP_COOKIES_FILE` environment variable; see `references/COOKIES.md`.
+
+## Workspace layout
+
+Default to a workspace-local `tmp` directory unless the user specifies another location:
+
+```text
+tmp/
+  videos/       # downloaded video/audio fallback files
+  transcripts/  # transcript run outputs
+  raw/          # optional raw logs/caption files
+```
+
+Downloaded web videos must go under:
+
+```text
+tmp/videos/
+```
+
+## Case 1: local video/audio file
+
+If the input is already a local file, do not use web download tools. Run local ASR directly:
 
 ```bash
-python3 scripts/fetch_youtube_content.py "<youtube-url-or-video-id>" --local-media "<optional-local-mp4-path>"
+mkdir -p tmp/transcripts
+python3 scripts/local_asr_faster_whisper.py "<local-media-file>" \
+  --out-dir "tmp/transcripts/<safe-run-name>" \
+  --model small \
+  --device cpu \
+  --compute-type int8
 ```
 
-The script creates a run directory like:
+Use stronger settings when the user wants accuracy and runtime is acceptable:
+
+```bash
+python3 scripts/local_asr_faster_whisper.py "<local-media-file>" \
+  --out-dir "tmp/transcripts/<safe-run-name>" \
+  --model medium \
+  --device cpu \
+  --compute-type int8
+```
+
+For CUDA-capable environments:
+
+```bash
+python3 scripts/local_asr_faster_whisper.py "<local-media-file>" \
+  --out-dir "tmp/transcripts/<safe-run-name>" \
+  --model large-v3 \
+  --device cuda \
+  --compute-type float16
+```
+
+After transcription, read:
 
 ```text
-/tmp/youtube_content_<video_id>_<timestamp>/
+tmp/transcripts/<safe-run-name>/local_asr_report.md
+tmp/transcripts/<safe-run-name>/local_asr_transcript.txt
+tmp/transcripts/<safe-run-name>/local_asr_transcript.json
 ```
 
-Important output files:
+## Case 2: web video link
+
+For a YouTube URL/video ID or web video URL, first try transcript/caption resources without downloading the video:
+
+```bash
+mkdir -p tmp/transcripts tmp/raw
+python3 scripts/fetch_youtube_content.py "<youtube-url-or-video-id>" \
+  --out-dir "tmp/transcripts/<safe-run-name>"
+```
+
+The helper tries the existing retrieval ladder:
+
+1. normalize YouTube ID
+2. direct YouTube watch page fetch
+3. `captionTracks` extraction
+4. `yt-dlp --write-subs/--write-auto-subs --skip-download`
+5. `youtube-dl` subtitle fallback when available
+6. direct YouTube timedtext variants
+7. metadata APIs such as noembed/oEmbed
+8. Piped frontend subtitle discovery
+9. local sidecar subtitles when local media is also supplied
+10. optional local ASR only when explicitly requested with a local media file
+
+If `transcript.txt` exists after this step, stop. Use that transcript and do not download the video.
+
+Read:
 
 ```text
-report.md                    # What methods were tried and what worked
-metadata.json                # Best metadata found
-transcript.txt               # Clean transcript, if any
-transcript_full.txt          # Same as transcript.txt, preserved for user inspection
-raw/                         # Raw pages, captions, JSON, and command output
+tmp/transcripts/<safe-run-name>/report.md
+tmp/transcripts/<safe-run-name>/metadata.json
+tmp/transcripts/<safe-run-name>/transcript.txt
 ```
 
-After running the script, read `report.md`, `metadata.json`, and `transcript.txt` if present. Base the answer on those files.
+## Case 3: web transcript resources failed, download fallback
 
-If the helper script is unavailable, follow the manual ladder in `references/manual_workflow.md`.
+Only after web transcript/caption resources fail, download the video into `tmp/videos/`.
 
-## Retrieval ladder
+First check whether the cookie-file environment variable is set:
 
-Use this order. Stop only after a good transcript is found, but still record enough diagnostics to explain the source.
+```bash
+if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
+  YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+else
+  YTDLP_COOKIE_ARGS=()
+fi
+```
 
-1. **Normalize input**
-   - Extract the YouTube video ID from `youtube.com/watch?v=...`, `youtu.be/...`, `/shorts/...`, `/embed/...`, or raw 11-character IDs.
-   - Preserve the original URL and any local media path.
+Then run `yt-dlp`. If `YTDLP_COOKIES_FILE` is set, the command uses it. If it is not set, the command does not add any cookie option:
 
-2. **Direct YouTube page fetch**
-   - Try `curl -L` or `wget` against the watch URL.
-   - Save the HTML under `raw/youtube_watch.html`.
-   - Search the page for `captionTracks`, `playerCaptionsTracklistRenderer`, `ytInitialPlayerResponse`, `title`, `shortDescription`, `chapters`, and `lengthSeconds`.
+```bash
+mkdir -p tmp/videos
+yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
+  --no-playlist \
+  --write-info-json \
+  --restrict-filenames \
+  -f "best[ext=mp4]/best" \
+  -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
+  "<web-video-url>"
+```
 
-3. **yt-dlp subtitle attempts**
-   - Try auto-generated subtitles:
-     ```bash
-     yt-dlp --write-auto-subs --skip-download "<url>" -o /tmp/yt_video
-     ```
-   - Try human subtitles:
-     ```bash
-     yt-dlp --write-subs --skip-download --sub-lang en "<url>" -o /tmp/yt_video
-     ```
-   - Prefer English tracks, but keep other available language metadata if English is missing.
+Do not ask the user to pass a cookie path directly on the command line. The only supported skill convention is `YTDLP_COOKIES_FILE`.
 
-4. **youtube-dl fallback**
-   - Try:
-     ```bash
-     youtube-dl --write-auto-sub --skip-download "<url>" -o /tmp/yt_video
-     ```
+Then transcribe the downloaded local video file:
 
-5. **Extract captionTracks / timedtext URLs**
-   - If the watch page contains caption track JSON, parse it.
-   - Fetch `baseUrl` values directly.
-   - Convert XML/VTT/TTML/SRV captions to plain text.
+```bash
+python3 scripts/local_asr_faster_whisper.py "tmp/videos/<downloaded-file>" \
+  --out-dir "tmp/transcripts/<safe-run-name>-local-asr" \
+  --model small \
+  --device cpu \
+  --compute-type int8
+```
 
-6. **Direct timedtext endpoint**
-   - Try:
-     ```text
-     https://www.youtube.com/api/timedtext?v=<video_id>&lang=en
-     ```
-   - Also try `fmt=vtt`, `fmt=ttml`, and `kind=asr` variants.
+Label this transcript source as `local ASR/faster-whisper from downloaded video`, not as official YouTube captions.
 
-7. **noembed / oEmbed metadata**
-   - Fetch metadata from:
-     ```text
-     https://noembed.com/embed?url=https://www.youtube.com/watch?v=<video_id>
-     https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=<video_id>&format=json
-     ```
-   - These usually provide metadata, not transcripts.
+## Optional integrated local-ASR rerun
 
-8. **Piped frontend caption discovery**
-   - Query Piped `/streams/<video_id>` endpoints.
-   - Look for a `subtitles` array.
-   - Prefer manually uploaded English captions over auto-generated ASR captions, unless the user explicitly wants ASR.
-   - Fetch subtitle URLs and convert to plain text.
-   - Explain that “Piped worked” means a Piped frontend exposed caption URLs or proxied YouTube timedtext captions.
+For YouTube links, after downloading the media, you may also rerun the existing helper with `--local-media` and `--allow-local-asr` so the final report ties together URL metadata and local ASR:
 
-9. **Local media fallback**
-   - Check for sidecar subtitle files near the MP4: `.vtt`, `.srt`, `.ttml`, `.srv1`, `.srv2`, `.srv3`, `.json`, `.info.json`.
-   - Use `ffprobe` if available to inspect embedded subtitle streams and metadata.
-   - If no transcript exists and the user owns/has rights to the media, use local ASR as an explicit fallback, not as the first choice.
-
-10. **Optional local ASR with faster-whisper**
-   - Use this when caption retrieval fails, captions are missing/low-quality, or the user only supplied a local audio/video file.
-   - Prefer this helper when available:
-     ```bash
-     python3 scripts/local_asr_faster_whisper.py "<local-media-file>" --model small --device cpu --compute-type int8 --extract-wav
-     ```
-   - Or run the main helper with ASR enabled:
-     ```bash
-     python3 scripts/fetch_youtube_content.py "<youtube-url-or-video-id>" --local-media "<local-mp4-path>" --allow-local-asr --asr-model small
-     ```
-   - Do not install `faster-whisper`, download large model weights, or start long background jobs unless the user has asked for local ASR or has clearly authorized that approach.
-   - Run ASR synchronously when the user expects the answer in the current session. Avoid `nohup ... &` unless the user explicitly asks for a background job and understands they must check the files/logs later.
-   - Save timestamped text, JSON segments, and SRT output. Label the source as `local ASR`, not `YouTube captions`.
+```bash
+python3 scripts/fetch_youtube_content.py "<youtube-url-or-video-id>" \
+  --local-media "tmp/videos/<downloaded-file>" \
+  --allow-local-asr \
+  --asr-model small \
+  --asr-device cpu \
+  --asr-compute-type int8 \
+  --out-dir "tmp/transcripts/<safe-run-name>-combined"
+```
 
 ## Summarization requirements
 
-When a transcript is available and the user asks for details, provide a comprehensive structured summary covering, when present:
+When a transcript is available and the user asks for details, provide a structured summary covering, when present:
 
-- title, channel/uploader, duration, upload date, description, and source of transcript
+- title, channel/uploader, duration, upload date, description, and transcript source
 - chapters/sections in order, with timestamps if available
 - all major topics from beginning to end
 - key technical concepts and definitions
 - strategies, algorithms, patterns, and tradeoffs
 - numerical examples, scenarios, diagrams, slides, code examples, screenshots, or whiteboard content mentioned
 - failure modes, caveats, edge cases, and operational challenges
-- memorable short quotes, staying within copyright-safe quote limits
-- transcript file path, if saved
-
-For system design videos about caching, explicitly look for:
-
-- cache-aside / lazy loading
-- read-through
-- write-through
-- write-behind / write-back
-- refresh-ahead
-- eviction: LRU, LFU, FIFO, TTL, random, size-based
-- cache stampede / thundering herd
-- invalidation strategies
-- consistency, stale reads, negative caching, hot keys
-- distributed caching, consistent hashing, replication, sharding, failover
-- Redis/Memcached/CDN/browser-cache/database-cache mentions
+- short memorable quotes within copyright-safe limits
+- transcript file path
 
 ## Reporting format
 
 When finished, include:
 
 ```text
-Transcript source: <yt-dlp manual subtitles | yt-dlp auto ASR | captionTracks | timedtext | Piped | local sidecar | local ASR/faster-whisper | unavailable>
+Transcript source: <web captions | yt-dlp subtitles | timedtext | Piped | local ASR/faster-whisper | local ASR/faster-whisper from downloaded video | unavailable>
 Transcript saved at: <path or unavailable>
-Metadata saved at: <path or unavailable>
+Downloaded video: <path or not needed>
+Metadata/report saved at: <path or unavailable>
 Methods tried: <short list of successes/failures>
 ```
 
-Then provide the user-facing summary.
+Then provide the user-facing summary or transcript.
 
 ## Failure handling
 
@@ -173,7 +207,7 @@ If no transcript is found:
 
 - Say clearly that transcript retrieval failed.
 - Explain which methods were tried.
-- Use available metadata, description, chapters, thumbnails, or local media metadata only if available.
-- Suggest the user provide a `.vtt`, `.srt`, `.json`, or downloaded subtitle file, or permit local ASR on the media file using faster-whisper/Whisper.
+- Use available metadata only if available.
+- Suggest the user provide a `.vtt`, `.srt`, `.json`, downloaded media file, or provision `YTDLP_COOKIES_FILE` when access requires authentication.
 
 Do not hallucinate video content from only the title.

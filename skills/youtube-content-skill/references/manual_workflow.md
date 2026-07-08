@@ -1,115 +1,169 @@
-# Manual YouTube transcript retrieval workflow
+# Manual Video Transcriber Workflow
 
-Use this when `scripts/fetch_youtube_content.py` cannot be run.
+Use this when the helper scripts cannot be run directly or when you need to reason through the workflow step by step.
 
-## Normalize the ID
-
-Accept these formats:
+## Decision tree
 
 ```text
-https://www.youtube.com/watch?v=VIDEO_ID
-https://youtu.be/VIDEO_ID
-https://www.youtube.com/shorts/VIDEO_ID
-https://www.youtube.com/embed/VIDEO_ID
-VIDEO_ID
+Input is a local media file?
+  -> transcribe directly with local ASR
+
+Input is a web video link?
+  -> try transcript/caption resources first
+  -> if transcript is found, stop
+  -> if transcript is unavailable, download video to tmp/videos
+  -> transcribe downloaded local video with local ASR
 ```
 
-## Create a workspace
+## Local media workflow
+
+For `.mp4`, `.mkv`, `.mov`, `.webm`, `.mp3`, `.m4a`, `.wav`, etc.:
 
 ```bash
-VIDEO_ID="1NngTUYPdpI"
-URL="https://www.youtube.com/watch?v=${VIDEO_ID}"
-OUT="/tmp/youtube_content_${VIDEO_ID}_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$OUT/raw"
+mkdir -p tmp/transcripts/local_media
+python3 scripts/local_asr_faster_whisper.py "/path/to/video.mp4" \
+  --out-dir tmp/transcripts/local_media \
+  --model small \
+  --device cpu \
+  --compute-type int8
 ```
 
-## Direct page fetch
+Useful output files:
+
+```text
+tmp/transcripts/local_media/local_asr_report.md
+tmp/transcripts/local_media/local_asr_transcript.txt
+tmp/transcripts/local_media/local_asr_transcript.srt
+tmp/transcripts/local_media/local_asr_transcript.json
+```
+
+## Web video transcript-first workflow
+
+For YouTube links, YouTube IDs, and similar web video links, do not download the video first. Try transcript resources first.
 
 ```bash
-curl -L --compressed -A 'Mozilla/5.0' "$URL" -o "$OUT/raw/youtube_watch.html"
-grep -o 'captionTracks.*' "$OUT/raw/youtube_watch.html" | head
+VIDEO_URL="https://www.youtube.com/watch?v=VIDEO_ID"
+OUT="tmp/transcripts/VIDEO_ID"
+mkdir -p "$OUT" tmp/videos
+python3 scripts/fetch_youtube_content.py "$VIDEO_URL" --out-dir "$OUT"
 ```
 
-## yt-dlp attempts
+Inspect:
 
 ```bash
-yt-dlp --write-auto-subs --skip-download "$URL" -o "$OUT/raw/yt_video" 2>&1 | tee "$OUT/raw/yt_dlp_auto.log"
-yt-dlp --write-subs --skip-download --sub-lang en "$URL" -o "$OUT/raw/yt_video" 2>&1 | tee "$OUT/raw/yt_dlp_manual.log"
+cat "$OUT/report.md"
+ls -la "$OUT"
 ```
 
-Convert `.vtt` files by removing timestamps and tags.
+If this exists, use it and stop:
 
-## youtube-dl fallback
+```text
+$OUT/transcript.txt
+```
+
+## What the transcript-first helper tries
+
+The existing helper tries, in order:
+
+1. normalize the YouTube video ID
+2. direct YouTube watch page fetch
+3. `captionTracks` extraction from the player response
+4. `yt-dlp --write-subs --skip-download`
+5. `yt-dlp --write-auto-subs --skip-download`
+6. `youtube-dl` subtitle fallback when available
+7. direct YouTube timedtext endpoint variants
+8. noembed/oEmbed metadata
+9. Piped frontend subtitle discovery
+10. local sidecar subtitles if local media was supplied
+11. optional local ASR if `--local-media` and `--allow-local-asr` are supplied
+
+## Download fallback
+
+Only use this when transcript/caption resources fail.
+
+The human/user may provision a cookies file path through `YTDLP_COOKIES_FILE`:
 
 ```bash
-youtube-dl --write-auto-sub --skip-download "$URL" -o "$OUT/raw/yt_video" 2>&1 | tee "$OUT/raw/youtube_dl_auto.log"
+export YTDLP_COOKIES_FILE=/secure/path/cookies.txt
 ```
 
-## Direct timedtext
-
-Try:
+Before running `yt-dlp`, check whether the variable is set. If it is set, use it. If it is not set, do not add any cookie option:
 
 ```bash
-curl -L "https://www.youtube.com/api/timedtext?v=${VIDEO_ID}&lang=en" -o "$OUT/raw/timedtext_en.xml"
-curl -L "https://www.youtube.com/api/timedtext?v=${VIDEO_ID}&lang=en&fmt=vtt" -o "$OUT/raw/timedtext_en.vtt"
-curl -L "https://www.youtube.com/api/timedtext?v=${VIDEO_ID}&lang=en&kind=asr&fmt=vtt" -o "$OUT/raw/timedtext_en_asr.vtt"
+if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
+  YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+else
+  YTDLP_COOKIE_ARGS=()
+fi
 ```
 
-## Metadata APIs
+Download the video into the workspace `tmp/videos/` folder:
 
 ```bash
-curl -L "https://noembed.com/embed?url=${URL}" -o "$OUT/raw/noembed.json"
-curl -L "https://www.youtube.com/oembed?url=${URL}&format=json" -o "$OUT/raw/oembed.json"
+mkdir -p tmp/videos
+yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
+  --no-playlist \
+  --write-info-json \
+  --restrict-filenames \
+  -f "best[ext=mp4]/best" \
+  -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
+  "$VIDEO_URL"
 ```
 
-## Piped discovery
+Do not ask for a cookie path in the command. Do not print cookie file contents.
 
-For a Piped instance:
+## Transcribe downloaded fallback video
+
+After download, find the media file:
 
 ```bash
-curl -L "https://piped.video/api/v1/streams/${VIDEO_ID}" -o "$OUT/raw/piped_streams.json"
+find tmp/videos -maxdepth 1 -type f \
+  \( -name '*.mp4' -o -name '*.mkv' -o -name '*.webm' -o -name '*.mov' -o -name '*.m4a' -o -name '*.mp3' \) \
+  -print
 ```
 
-Inspect `.subtitles[]`. Fetch the best English subtitle URL. A Piped subtitle URL may itself point at, or proxy, YouTube timedtext captions.
-
-## Local media fallback
-
-Look near the MP4 for sidecar subtitles:
+Then run ASR:
 
 ```bash
-ls -la /path/to/video* | grep -E '\.(vtt|srt|ttml|srv[123]|json)$'
+python3 scripts/local_asr_faster_whisper.py "tmp/videos/<downloaded-file>" \
+  --out-dir "tmp/transcripts/VIDEO_ID-local-asr" \
+  --model small \
+  --device cpu \
+  --compute-type int8
 ```
 
-Inspect embedded streams:
+Label the transcript source as:
+
+```text
+local ASR/faster-whisper from downloaded video
+```
+
+Do not call it official captions.
+
+## Optional combined report
+
+For YouTube links, after download you can rerun the main helper so the report includes both URL metadata and ASR fallback:
 
 ```bash
-ffprobe -hide_banner -i /path/to/video.mp4
+python3 scripts/fetch_youtube_content.py "$VIDEO_URL" \
+  --local-media "tmp/videos/<downloaded-file>" \
+  --allow-local-asr \
+  --asr-model small \
+  --asr-device cpu \
+  --asr-compute-type int8 \
+  --out-dir "tmp/transcripts/VIDEO_ID-combined"
 ```
 
-If no transcript exists and the user has permission, use installed ASR tooling, such as Whisper, but do not install large dependencies without asking.
+## Reporting checklist
 
+When finished, report:
 
-## Optional fallback: local ASR with faster-whisper
-
-Use this when ordinary caption retrieval does not work, when the user supplied a local MP4/audio file, or when the user wants a transcript independent of YouTube's caption service.
-
-Recommended synchronous command:
-
-```bash
-python3 scripts/local_asr_faster_whisper.py "/path/to/video.mp4" --model small --device cpu --compute-type int8 --extract-wav
+```text
+Transcript source: <captionTracks | yt-dlp subtitles | timedtext | Piped | local ASR/faster-whisper | local ASR/faster-whisper from downloaded video | unavailable>
+Transcript saved at: <path or unavailable>
+Downloaded video: <path or not needed>
+Report/metadata saved at: <path>
+Methods tried: <short list>
 ```
 
-Main-helper integrated command:
-
-```bash
-python3 scripts/fetch_youtube_content.py "https://www.youtube.com/watch?v=<id>" --local-media "/path/to/video.mp4" --allow-local-asr --asr-model small
-```
-
-Notes:
-
-- `faster-whisper` must already be installed, or the user must explicitly approve installing it and downloading model weights.
-- CPU `int8` with the `small` model is a practical default. Use `tiny`/`base` for speed, `medium`/`large-v3` for better accuracy, and CUDA options only when GPU support is available.
-- ASR can mishear names, code terms, acronyms, and technical vocabulary. Prefer official/manual captions when they exist.
-- Save the JSON segments as evidence for timestamps and later correction.
-- Do not represent ASR text as official YouTube captions. Label it clearly as local ASR.
-- Avoid `nohup`/background jobs for interactive analysis unless the user explicitly asked to launch a job and inspect the log later.
+If no transcript is found, state exactly what failed and avoid hallucinating the video content from the title alone.
