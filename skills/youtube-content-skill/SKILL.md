@@ -25,7 +25,7 @@ Follow the source-specific ladder. Do not improvise a new one-off approach every
 
 Respect access controls and copyright. Do not bypass paywalls, private video restrictions, account-only access, DRM, or age-gated/login-only content. Prefer summaries and user-directed analysis. Only provide long verbatim transcript text when the user owns the video, has supplied the transcript/media themselves, or reuse is clearly permitted.
 
-Never print cookie file contents. If cookies are needed, use a provisioned Netscape/Mozilla `cookies.txt` file; see `references/COOKIES.md`.
+Never print cookie file contents. If cookies are needed, the human/user should provision the cookie file path in the `YTDLP_COOKIES_FILE` environment variable; see `references/COOKIES.md`.
 
 ## Workspace layout
 
@@ -120,22 +120,23 @@ tmp/transcripts/<safe-run-name>/transcript.txt
 
 ## Case 3: web transcript resources failed, download fallback
 
-Only after web transcript/caption resources fail, download the video into `tmp/videos/`:
+Only after web transcript/caption resources fail, download the video into `tmp/videos/`.
+
+First check whether the cookie-file environment variable is set:
+
+```bash
+if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
+  YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+else
+  YTDLP_COOKIE_ARGS=()
+fi
+```
+
+Then run `yt-dlp`. If `YTDLP_COOKIES_FILE` is set, the command uses it. If it is not set, the command does not add any cookie option:
 
 ```bash
 mkdir -p tmp/videos
-yt-dlp --no-playlist \
-  --write-info-json \
-  --restrict-filenames \
-  -f "best[ext=mp4]/best" \
-  -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
-  "<web-video-url>"
-```
-
-If the user provided a provisioned cookies file:
-
-```bash
-yt-dlp --cookies "<cookies-file>" \
+yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
   --no-playlist \
   --write-info-json \
   --restrict-filenames \
@@ -144,17 +145,7 @@ yt-dlp --cookies "<cookies-file>" \
   "<web-video-url>"
 ```
 
-Or use the environment variable:
-
-```bash
-export YTDLP_COOKIES_FILE="<cookies-file>"
-yt-dlp --cookies "$YTDLP_COOKIES_FILE" --no-playlist \
-  --write-info-json \
-  --restrict-filenames \
-  -f "best[ext=mp4]/best" \
-  -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
-  "<web-video-url>"
-```
+Do not ask the user to pass a cookie path directly on the command line. The only supported skill convention is `YTDLP_COOKIES_FILE`.
 
 Then transcribe the downloaded local video file:
 
@@ -217,6 +208,6 @@ If no transcript is found:
 - Say clearly that transcript retrieval failed.
 - Explain which methods were tried.
 - Use available metadata only if available.
-- Suggest the user provide a `.vtt`, `.srt`, `.json`, downloaded media file, or a valid cookies file when access requires authentication.
+- Suggest the user provide a `.vtt`, `.srt`, `.json`, downloaded media file, or provision `YTDLP_COOKIES_FILE` when access requires authentication.
 
 Do not hallucinate video content from only the title.
