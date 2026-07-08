@@ -81,22 +81,27 @@ The existing helper tries, in order:
 
 Only use this when transcript/caption resources fail.
 
+The human/user may provision a cookies file path through `YTDLP_COOKIES_FILE`:
+
+```bash
+export YTDLP_COOKIES_FILE=/secure/path/cookies.txt
+```
+
+Before running `yt-dlp`, check whether the variable is set. If it is set, use it. If it is not set, do not add any cookie option:
+
+```bash
+if [ -n "${YTDLP_COOKIES_FILE:-}" ]; then
+  YTDLP_COOKIE_ARGS=(--cookies "$YTDLP_COOKIES_FILE")
+else
+  YTDLP_COOKIE_ARGS=()
+fi
+```
+
 Download the video into the workspace `tmp/videos/` folder:
 
 ```bash
 mkdir -p tmp/videos
-yt-dlp --no-playlist \
-  --write-info-json \
-  --restrict-filenames \
-  -f "best[ext=mp4]/best" \
-  -o "tmp/videos/%(title).180B-%(id)s.%(ext)s" \
-  "$VIDEO_URL"
-```
-
-If a provisioned cookies file is needed:
-
-```bash
-yt-dlp --cookies "/secure/path/cookies.txt" \
+yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
   --no-playlist \
   --write-info-json \
   --restrict-filenames \
@@ -105,7 +110,7 @@ yt-dlp --cookies "/secure/path/cookies.txt" \
   "$VIDEO_URL"
 ```
 
-Do not print cookie file contents.
+Do not ask for a cookie path in the command. Do not print cookie file contents.
 
 ## Transcribe downloaded fallback video
 
