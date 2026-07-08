@@ -132,11 +132,26 @@ else
 fi
 ```
 
-Then run `yt-dlp`. If `YTDLP_COOKIES_FILE` is set, the command uses it. If it is not set, the command does not add any cookie option:
+Then check JavaScript runtime support for yt-dlp's YouTube EJS challenge solving. Deno is preferred and is enabled by yt-dlp by default. If Deno is not available but Node or QuickJS is available, explicitly enable it:
+
+```bash
+YTDLP_JS_ARGS=()
+if command -v deno >/dev/null 2>&1; then
+  :  # Deno is enabled by default; no extra arg needed.
+elif command -v node >/dev/null 2>&1; then
+  YTDLP_JS_ARGS=(--js-runtimes node)
+elif command -v qjs >/dev/null 2>&1; then
+  YTDLP_JS_ARGS=(--js-runtimes quickjs)
+else
+  echo "No supported JavaScript runtime found for yt-dlp EJS challenge solving. Install Deno first, or Node/QuickJS as fallback." >&2
+fi
+```
+
+Then run `yt-dlp`. If `YTDLP_COOKIES_FILE` is set, the command uses it. If it is not set, the command does not add any cookie option. If Node/QuickJS is needed, the command includes the correct `--js-runtimes` option:
 
 ```bash
 mkdir -p tmp/videos
-yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
+yt-dlp "${YTDLP_JS_ARGS[@]}" "${YTDLP_COOKIE_ARGS[@]}" \
   --no-playlist \
   --write-info-json \
   --restrict-filenames \
@@ -146,6 +161,31 @@ yt-dlp "${YTDLP_COOKIE_ARGS[@]}" \
 ```
 
 Do not ask the user to pass a cookie path directly on the command line. The only supported skill convention is `YTDLP_COOKIES_FILE`.
+
+## yt-dlp EJS / n-challenge troubleshooting
+
+If `yt-dlp --list-formats` shows only storyboard/image formats such as `sb0`, `sb1`, `sb2`, `sb3`, or `mhtml`, and the log says `n challenge solving failed`, do not treat that as a usable video download. It usually means the environment is missing EJS support.
+
+Do this checklist:
+
+```bash
+yt-dlp --version
+python3 -m pip show yt-dlp yt-dlp-ejs 2>/dev/null || true
+command -v deno || true
+command -v node || true
+command -v qjs || true
+yt-dlp --verbose --list-formats "<web-video-url>" 2>&1 | tee tmp/yt-dlp-verbose.log
+```
+
+For pip-based installs, install or update yt-dlp with its default dependencies:
+
+```bash
+python3 -m pip install -U "yt-dlp[default]"
+```
+
+If no JavaScript runtime is available, ask the user to install Deno. If Deno cannot be installed but Node is available, use `--js-runtimes node`. If QuickJS is available as `qjs`, use `--js-runtimes quickjs`.
+
+For more details, see `references/YTDLP_EJS_TROUBLESHOOTING.md`.
 
 Then transcribe the downloaded local video file:
 
@@ -208,6 +248,6 @@ If no transcript is found:
 - Say clearly that transcript retrieval failed.
 - Explain which methods were tried.
 - Use available metadata only if available.
-- Suggest the user provide a `.vtt`, `.srt`, `.json`, downloaded media file, or provision `YTDLP_COOKIES_FILE` when access requires authentication.
+- Suggest the user provide a `.vtt`, `.srt`, `.json`, downloaded media file, provision `YTDLP_COOKIES_FILE` when access requires authentication, or install Deno/yt-dlp EJS support when `n challenge solving failed` appears.
 
 Do not hallucinate video content from only the title.
